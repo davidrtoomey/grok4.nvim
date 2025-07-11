@@ -14,7 +14,7 @@ map({"n", "v"}, "<leader>g", ":GrokReplace<CR>", { desc = "Grok Replace" })
 ## how to call the plugin 
 use visual mode to select the text to replace 
 
-I'm using <leader>g to call it
+I'm using leader+g to call it
 
 
 
