@@ -1,20 +1,23 @@
 ## Use grok 4 right within neovim! 
-based on a yacine repo I saw a while back
+call grok-4-fast in a vim buffer and stream the response text into file
 
 put this file in your custom plugins folder
+~/.config/nvim/lua/custom/plugins/grok_replace.lua
 
-I'm using nvchad on macos. no idea if it's working on other setups. 
+tested with nvchad on mac
 
 ## nvchad.lua setup
-require("custom.plugins.grok_replace").setup({ model = "grok-4-0709" })
+require("custom.plugins.grok_replace").setup({ model = "grok-4-fast" })
 
 ## mappings.lua setup
-map({"n", "v"}, "<leader>g", ":GrokReplace<CR>", { desc = "Grok Replace" })
+map({"n", "v"}, "<leader>G", ":GrokReplace<CR>", { desc = "Grok Replace" })
 
 ## how to call the plugin 
 use visual mode to select the text to replace 
 
-I'm using leader+g to call it
+I'm using leader+G to call it
+
+based on a yacine repo
 
 
 
