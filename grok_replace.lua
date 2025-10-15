@@ -2,69 +2,57 @@ local M = {}
 
 -- Default configuration.
 local config = {
-  model = "grok-4-0709",
+  model = "grok-4-fast",
   system_prompt = [[You should replace the code that you are sent, only following the comments. Do not talk at all. Only output valid code. Do not provide any backticks that surround the code. Never ever output backticks like this ```. Any comment that is asking you for something should be removed after you satisfy them. Other comments should left alone.]]
 }
 
-local output_file = vim.fn.stdpath("cache") .. "/grok_stream.log"
-local log_file = vim.fn.stdpath("cache") .. "/grok_replace.log"
+-- local output_file = vim.fn.stdpath("cache") .. "/grok_stream.log"
+-- local log_file = vim.fn.stdpath("cache") .. "/grok_replace.log"
 
-local function log_message(msg)
-  local file = io.open(log_file, "a")
-  if file then
-    file:write(os.date("%Y-%m-%d %H:%M:%S") .. " " .. tostring(msg) .. "\n")
-    file:close()
-  else
-    vim.notify("Could not open log file: " .. log_file, vim.log.levels.ERROR)
-  end
-end
+-- local function log_message(msg)
+--   local file = io.open(log_file, "a")
+--   if file then
+--     file:write(os.date("%Y-%m-%d %H:%M:%S") .. " " .. tostring(msg) .. "\n")
+--     file:close()
+--   else
+--     vim.notify("Could not open log file: " .. log_file, vim.log.levels.ERROR)
+--   end
+-- end
 
-local function append_to_output_file(data)
-  local file = io.open(output_file, "a")
-  if file then
-    file:write(data)
-    file:close()
-  else
-    log_message("Failed to open output file: " .. output_file)
-  end
-end
-
-local function format_chunk(chunk)
-  if not chunk then
+local function format_full_content(content)
+  if not content or content == "" then
     return ""
   end
-  
-  -- Basic text cleanup.
-  chunk = chunk:gsub('\\\"', '"')
-  chunk = chunk:gsub('\\n', '\n')
-  
-  -- Remove language identifier if present
-  chunk = chunk:gsub('^%s*[%w_]+%s*\n', '')
-  chunk = chunk:gsub('^%s*[pP][yY][tT][hH][oO][nN]%s*\n', '')
-  chunk = chunk:gsub('^%s*[pP][yY][tT][hH][oO][nN]%s*$', '')
-  
-  -- Replace single line 'python' with nothing
-  if chunk:match('^%s*[pP][yY][tT][hH][oO][nN]%s*$') then
-    return ""
-  end
-  
-  return chunk
-end
 
-local function write_string_at_cursor(str)
-  vim.schedule(function()
-    local current_window = vim.api.nvim_get_current_win()
-    local cursor_position = vim.api.nvim_win_get_cursor(current_window)
-    local row, col = cursor_position[1], cursor_position[2]
-    
-    local lines = vim.split(str, '\n')
-    vim.cmd("undojoin")
-    vim.api.nvim_put(lines, 'c', true, true)
-    
-    local num_lines = #lines
-    local last_line_length = #lines[num_lines]
-    vim.api.nvim_win_set_cursor(current_window, { row + num_lines - 1, col + last_line_length })
-  end)
+  -- Remove leading/trailing whitespace
+  content = content:gsub("^%s*", ""):gsub("%s*$", "")
+
+  -- Remove entire code blocks if present (full response)
+  content = content:gsub("^```[%w_]*%s*\n", ""):gsub("\n%s*```$", "")
+
+  -- Remove any remaining partial fences or lang ids at start/end
+  content = content:gsub("^[%w_]*%s*\n", "")
+  content = content:gsub("\n[%w_]*%s*$", "")
+
+  -- Clean up common artifacts: extra newlines, escaped quotes (though JSON handles most)
+  content = content:gsub("\\n", "\n"):gsub('\\"', '"'):gsub("\\\\", "\\")
+
+  -- Normalize single newlines to ensure consistent line breaks
+  content = content:gsub("\r\n?", "\n")
+
+  -- Add markdown-friendly spacing: Ensure double newlines after headings (##, ###), before/after lists (1., -), and between paragraphs
+  -- After headings: ## Text\n -> ## Text\n\n
+  content = content:gsub("^(#+ .+?)\n", "%1\n\n")
+  -- Before numbered/bulleted lists: Text\n1. -> Text\n\n1.
+  content = content:gsub("(%n?)([%d]+%s*%.|%-) ", "%1\n\n%2 ")
+  -- After list items if single-spaced: 1. Item\n2. -> 1. Item\n\n2.
+  content = content:gsub("([%d]+%s*%.|%- .+?)\n([%d]+%s*%.|%- )", "%1\n\n%2")
+  -- Between paragraphs (non-empty lines separated by single \n): Line\nLine -> Line\n\nLine
+  content = content:gsub("([^\n]+)\n([^\n]+)", "%1\n\n%2")
+  -- Trim excessive newlines at end/start but keep doubles
+  content = content:gsub("^\n+", "\n"):gsub("\n+$", "\n"):gsub("\n{3,}", "\n\n")
+
+  return content
 end
 
 function M.setup(user_config)
@@ -85,7 +73,7 @@ function M.replace_with_grok()
   local start_line_idx = start_line - 1
   local start_col_idx = start_col - 1
   local end_line_idx = end_line - 1
-  local end_col_idx = end_col
+  local end_col_idx = end_pos[3] - 1  -- 0-based exclusive end column
 
   -- Retrieve the selected text to use as the prompt.
   local original_lines = vim.api.nvim_buf_get_lines(buf, start_line_idx, end_line, false)
@@ -99,15 +87,21 @@ function M.replace_with_grok()
 
   -- Clamp end_col_idx.
   local last_line_text = vim.api.nvim_buf_get_lines(buf, end_line_idx, end_line_idx + 1, false)[1] or ""
-  if end_col_idx > #last_line_text then
-    end_col_idx = #last_line_text
+  local line_len = #last_line_text
+  if end_col_idx > line_len then
+    end_col_idx = line_len
   end
 
   -- Remove the selected text.
   vim.api.nvim_buf_set_text(buf, start_line_idx, start_col_idx, end_line_idx, end_col_idx, {})
 
-  -- Insert an empty line at the insertion point.
-  vim.api.nvim_buf_set_lines(buf, start_line_idx, start_line_idx, false, {""})
+  -- Set initial insertion position
+  local insertion_row = start_line_idx
+  local insertion_col = start_col_idx
+
+  -- Line buffer for streaming
+  local line_buffer = ""
+  local full_inserted_range = {start_row = insertion_row, start_col = insertion_col, end_row = insertion_row, end_col = insertion_col}  -- Track inserted block for final cleanup
 
   ----------------------------------------
   ----------------- grok -----------------
@@ -116,20 +110,21 @@ function M.replace_with_grok()
     model = config.model,
     system = config.system_prompt,
     temperature = 0,
+    stream = true,
     messages = {
       { role = "user", content = original_text }
     }
   }
 
   local json_grok_payload = vim.fn.json_encode(grok_payload)
-  log_message("Payload: " .. json_grok_payload)
+  -- log_message("Payload: " .. json_grok_payload)
 
   local grok_args = {
     "-s",
     "-X", "POST",
     "https://api.x.ai/v1/chat/completions",
     "-H", "Content-Type: application/json",
-    "-H", "Authorization: Bearer " .. os.getenv("YOUR_XAI_API_KEY"),
+    "-H", "Authorization: Bearer " .. os.getenv("GROK_API_KEY"),
     "-d", json_grok_payload,
     "--no-buffer"
   }
@@ -139,38 +134,87 @@ function M.replace_with_grok()
     command = "curl",
     args = grok_args,
     on_stdout = function(_, line)
-      log_message("Raw line: " .. line)
-      
-      local code
-      if line:match("```") then
-        code = line:match("```%s*([%s%S]-)```")
-      else
-        -- If no code blocks, check for content field
-        local ok, parsed = pcall(vim.fn.json_decode, line)
-        if ok and parsed and parsed.choices and parsed.choices[1] and 
-           parsed.choices[1].message and parsed.choices[1].message.content then
-          code = parsed.choices[1].message.content
+      -- log_message("Raw line: " .. line)
+
+      -- Parse SSE format: "data: {...}"
+      if line:match("^data: ") then
+        local json_str = line:gsub("^data: ", "")
+
+        -- Skip [DONE] marker
+        if json_str == "[DONE]" then
+          -- Flush final buffer and clean up
+          if line_buffer ~= "" then
+            local final_line = line_buffer .. "\n"
+            vim.schedule(function()
+              local new_lines = vim.split(final_line, "\n")
+              vim.api.nvim_buf_set_text(buf, insertion_row, insertion_col, insertion_row, insertion_col, new_lines)
+              -- Update positions
+              insertion_row = insertion_row + #new_lines - 1
+              insertion_col = #new_lines[#new_lines]
+              full_inserted_range.end_row = insertion_row
+              full_inserted_range.end_col = insertion_col
+            end)
+          end
+          return
         end
-      end
-      
-      if code then
-        code = format_chunk(code)
-        write_string_at_cursor(code)
+
+        -- Defer JSON parsing to main thread
+        vim.schedule(function()
+          local ok, parsed = pcall(vim.fn.json_decode, json_str)
+          if ok and parsed and parsed.choices and parsed.choices[1] then
+            local delta = parsed.choices[1].delta
+            if delta and delta.content then
+              line_buffer = line_buffer .. delta.content
+              -- log_message("Buffer so far: " .. line_buffer)  -- Debug
+
+              -- Insert on newline (full line ready)
+              local pos = line_buffer:find("\n")
+              while pos do
+                local ready_line = line_buffer:sub(1, pos)
+                line_buffer = line_buffer:sub(pos + 1)
+
+                if ready_line ~= "\n" then  -- Skip empty lines
+                  local new_lines = vim.split(ready_line, "\n")
+                  vim.api.nvim_buf_set_text(buf, insertion_row, insertion_col, insertion_row, insertion_col, new_lines)
+                  -- Update positions
+                  local num_new = #new_lines
+                  insertion_row = insertion_row + num_new - 1
+                  insertion_col = #new_lines[num_new]
+                  full_inserted_range.end_row = insertion_row
+                  full_inserted_range.end_col = insertion_col
+                end
+
+                pos = line_buffer:find("\n")
+              end
+            end
+          else
+            -- log_message("JSON parse failed: " .. (parsed or "nil"))
+          end
+        end)
       end
     end,
     on_stderr = function(_, line)
       if line then
-        log_message("Stderr: " .. line)
-        append_to_output_file("\nStderr: " .. line .. "\n")
+        -- log_message("Stderr: " .. line)
       end
     end,
     on_exit = function(_)
       vim.schedule(function()
+        -- Final cleanup: Reformat the entire inserted block with improved markdown spacing
+        local inserted_lines = vim.api.nvim_buf_get_lines(buf, full_inserted_range.start_row, full_inserted_range.end_row + 1, false)
+        local raw_content = table.concat(inserted_lines, "\n")
+        local cleaned = format_full_content(raw_content)
+
+        if cleaned ~= raw_content then
+          local clean_lines = vim.split(cleaned, "\n")
+          vim.api.nvim_buf_set_text(buf, full_inserted_range.start_row, full_inserted_range.start_col, full_inserted_range.end_row, full_inserted_range.end_col, clean_lines)
+        end
+
         vim.cmd("write")
+        -- log_message("Streaming complete - inserted " .. (#inserted_lines) .. " lines")
       end)
     end,
   }):start()
 end
 
 return M
-
